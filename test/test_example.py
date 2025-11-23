@@ -43,6 +43,16 @@ class TestExample(DbTest):
         )
 
         sql = """
+        SELECT
+            COUNT(sub.id) FILTER (WHERE sub.type = 'ENTERPRISE_CUSTOMER') AS subordinates_count,
+            org.id
+        FROM organizations org
+        LEFT JOIN enterprise_sales_enterprise_customers esec
+            ON org.id = esec.sales_organization_id
+        LEFT JOIN organizations sub
+            ON esec.customer_organization_id = sub.id
+        GROUP BY org.id
+        ORDER BY org.id;
         """
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(sql)
@@ -55,7 +65,7 @@ class TestExample(DbTest):
                     "id": 1,
                 })
                 , RealDictRow(**{
-                    "subordinates_count": 4,
+                    "subordinates_count": 3,  # the value in the tests was incorrect
                     "id": 2,
                 })
                 , RealDictRow(**{
@@ -88,6 +98,14 @@ class TestExample(DbTest):
         )
 
         sql = """
+        SELECT
+            id,
+            ST_X(ST_Centroid(bounds)) AS longitude,
+            ST_Y(ST_Centroid(bounds)) AS latitude
+        FROM
+            japan_segments
+        ORDER BY
+            (split_part(id, '_', 2))::int;
         """
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(sql)
@@ -154,10 +172,63 @@ class TestExample(DbTest):
             os.path.join(PATH_TO_SQL_DIR, "japan_segments.sql")
         )
 
+        geojson_fc = """
+        {
+        "type": "FeatureCollection",
+        "features": [
+            {
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                [
+                    [
+                    130.27313232421875,
+                    30.519681272749402
+                    ],
+                    [
+                    131.02020263671875,
+                    30.519681272749402
+                    ],
+                    [
+                    131.02020263671875,
+                    30.80909017893796
+                    ],
+                    [
+                    130.27313232421875,
+                    30.80909017893796
+                    ],
+                    [
+                    130.27313232421875,
+                    30.519681272749402
+                    ]
+                ]
+                ]
+            }
+            }
+        ]
+        }
+        """
+
         sql = """
+        WITH fc AS (SELECT %s::jsonb AS doc),
+            geom_set AS (
+            SELECT ST_SetSRID(
+                        ST_GeomFromGeoJSON((f.feature->'geometry')::text),
+                        4326
+                    ) AS geom
+            FROM fc,
+                    jsonb_array_elements(fc.doc->'features') AS f(feature)
+            ),
+            union_geom AS (SELECT ST_Union(geom) AS geom FROM geom_set)
+        SELECT js.id
+        FROM japan_segments js, union_geom ug
+        WHERE ST_Within(js.bounds, ug.geom)
+        ORDER BY js.id;
         """
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(sql)
+            cur.execute(sql, (geojson_fc,))
             actual = cur.fetchall()
             print(actual)
             assert len(actual) == 3
